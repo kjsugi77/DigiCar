@@ -14,8 +14,8 @@
 #define SERVO_PIN    32  // GPIO32（サーボ信号線）
 
 // WiFi設定
-const char* ssid = "DigiCar_Control";  // WiFiのSSID
 const char* password = "digimoku";     // WiFiのパスワード
+String ssid;                           // SSIDは起動時にMACアドレスから生成
 
 WebServer server(80);
 
@@ -44,9 +44,18 @@ void setup() {
   stopMotors();
   setServoAngle(90); // サーボを中央位置に
   Serial.println("Motors and Steering initialized");
-  
-  // WiFi APモードで起動（省電力設定）
-  WiFi.softAP(ssid, password);
+
+  // MACアドレス下4桁をSSIDに付加（例: DigiCar_Control_B65D）
+  // APモードで起動してからMACアドレスを取得
+  WiFi.softAP("DigiCar_Control", password); // 仮SSIDで一旦起動
+  String mac = WiFi.softAPmacAddress();     // APモードのMACアドレスを取得
+  mac.replace(":", "");                     // コロン除去 → "A4CF12B65Dxx"
+  String macSuffix = mac.substring(mac.length() - 6, mac.length() - 2); // 下2バイト = 4文字
+  macSuffix.toUpperCase();
+  ssid = "DigiCar_Control_" + macSuffix;
+
+  // 正式なSSIDで再起動
+  WiFi.softAP(ssid.c_str(), password);
   
   // WiFi省電力設定
   WiFi.setSleep(false); // WiFiスリープを無効化（安定性優先）
@@ -56,13 +65,17 @@ void setup() {
     esp_wifi_set_ps(WIFI_PS_NONE); // WiFi省電力モードを無効化
   #endif
   
-  Serial.println("WiFi AP started");
-  Serial.print("SSID: ");
+  // 起動時にシリアルへ接続情報を表示
+  Serial.println("========================================");
+  Serial.println("  WiFi AP started");
+  Serial.print  ("  SSID     : ");
   Serial.println(ssid);
-  Serial.print("Password: ");
+  Serial.print  ("  Password : ");
   Serial.println(password);
-  Serial.print("IP Address: ");
+  Serial.print  ("  IP       : ");
   Serial.println(WiFi.softAPIP());
+  Serial.println("  ブラウザで http://192.168.4.1 を開いてね！");
+  Serial.println("========================================");
   
   // Webサーバーの設定
   server.on("/", handleRoot);
@@ -74,7 +87,6 @@ void setup() {
   
   server.begin();
   Serial.println("Web server started");
-  Serial.println("Connect to WiFi 'DigiCar_Control' and visit http://192.168.4.1");
 }
 
 void loop() {
@@ -91,10 +103,6 @@ void setServoAngle(int angle) {
   digitalWrite(SERVO_PIN, HIGH);
   delayMicroseconds(pulseWidth);
   digitalWrite(SERVO_PIN, LOW);
-  
-  // シリアル出力を削減（デバッグ時のみ有効）
-  // Serial.print("S: ");
-  // Serial.println(angle);
 }
 
 // WebページのHTML
@@ -113,6 +121,9 @@ void handleRoot() {
             background-color: #f0f0f0;
             margin: 0;
             padding: 20px;
+            /* テキスト選択を無効化 */
+            -webkit-user-select: none;
+            user-select: none;
         }
         .container {
             max-width: 400px;
@@ -139,8 +150,11 @@ void handleRoot() {
             border: none;
             border-radius: 10px;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: all 0.1s;
             font-weight: bold;
+            /* タップ時のハイライト無効化 */
+            -webkit-tap-highlight-color: transparent;
+            touch-action: none;
         }
         .forward { 
             background-color: #4CAF50; 
@@ -157,13 +171,9 @@ void handleRoot() {
             color: white; 
             width: 100%; 
         }
-        
-        .control-btn:hover {
-            transform: scale(1.05);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-        }
-        .control-btn:active {
+        .control-btn:active, .control-btn.pressed {
             transform: scale(0.95);
+            filter: brightness(0.85);
         }
         
         .steering-section {
@@ -233,6 +243,7 @@ void handleRoot() {
             border: 2px solid #999;
             box-shadow: inset 0 2px 10px rgba(0,0,0,0.1);
             cursor: pointer;
+            touch-action: none;
         }
         
         .joystick-knob {
@@ -328,9 +339,9 @@ void handleRoot() {
         </div>
         
         <div class="control-grid">
-            <button class="control-btn forward" onclick="sendCommand('forward')">↑<br>前進</button>
-            <button class="control-btn stop" onclick="sendCommand('stop')">■<br>停止</button>
-            <button class="control-btn backward" onclick="sendCommand('backward')">↓<br>後進</button>
+            <button class="control-btn forward" id="btnForward">↑<br>前進</button>
+            <button class="control-btn stop" id="btnStop">■<br>停止</button>
+            <button class="control-btn backward" id="btnBackward">↓<br>後進</button>
         </div>
         
         <div class="steering-section">
@@ -342,63 +353,108 @@ void handleRoot() {
     </div>
 
     <script>
-        // バーチャルスティック用の変数
+        // ===== ジョイスティック用変数 =====
         let isDragging = false;
         let joystickKnob = document.getElementById('joystickKnob');
         let joystickContainer = document.getElementById('joystickContainer');
         let joystickSpeed = document.getElementById('joystickSpeed');
         let joystickDirection = document.getElementById('joystickDirection');
         let maxSpeedValue = document.getElementById('maxSpeedValue');
-        let speedSlider = document.getElementById('speedSlider');
         
-        const centerX = 75; // ジョイスティックの中心X座標
-        const centerY = 75; // ジョイスティックの中心Y座標
-        const maxDistance = 50; // 最大移動距離
-        let maxSpeed = 50; // 最大速度（%）
-        
-        // バーチャルスティックのイベントリスナー
+        const maxDistance = 50;
+        let maxSpeed = 50;
+        let lastCommand = '';
+
+        // ===== ボタン用変数 =====
+        // ジョイスティック使用中はボタンを無視するフラグ
+        let joystickActive = false;
+        // ボタン押しっぱなし中の繰り返し送信用タイマー
+        let buttonInterval = null;
+        // 現在押されているボタンのコマンド
+        let activeButtonCommand = null;
+
+        // ===== ボタンのタッチイベント設定 =====
+        // 現在の走行状態（'forward'/'backward'/null）
+        let driveState = null;
+
+        function setDriveState(command) {
+            // 前進・後進はトグル動作（停止ボタンを押すまで継続）
+            const btnForward  = document.getElementById('btnForward');
+            const btnBackward = document.getElementById('btnBackward');
+
+            if (command === 'forward' || command === 'backward') {
+                driveState = command;
+                btnForward.classList.toggle('pressed', command === 'forward');
+                btnBackward.classList.toggle('pressed', command === 'backward');
+                sendCommand(command);
+            } else {
+                // 停止
+                driveState = null;
+                btnForward.classList.remove('pressed');
+                btnBackward.classList.remove('pressed');
+                sendCommand('stop');
+            }
+        }
+
+        function setupButton(btnId, command) {
+            const btn = document.getElementById(btnId);
+
+            function onPress(e) {
+                e.preventDefault();
+                if (joystickActive) return; // ジョイスティック優先
+                setDriveState(command);
+            }
+
+            btn.addEventListener('touchstart', onPress, { passive: false });
+            btn.addEventListener('mousedown', onPress);
+        }
+
+        setupButton('btnForward', 'forward');
+        setupButton('btnBackward', 'backward');
+        setupButton('btnStop', 'stop');
+
+        // ===== ジョイスティックのイベントリスナー =====
+        joystickContainer.addEventListener('touchstart', handleJoystickStart, { passive: false });
         joystickContainer.addEventListener('mousedown', handleJoystickStart);
-        joystickContainer.addEventListener('touchstart', handleJoystickStart, {passive: false});
+        document.addEventListener('touchmove', handleJoystickMove, { passive: false });
         document.addEventListener('mousemove', handleJoystickMove);
-        document.addEventListener('touchmove', handleJoystickMove, {passive: false});
+        document.addEventListener('touchend', handleJoystickEnd, { passive: false });
         document.addEventListener('mouseup', handleJoystickEnd);
-        document.addEventListener('touchend', handleJoystickEnd, {passive: false});
-        
+
         function sendCommand(command) {
-            fetch('/' + command)
-                .then(response => {
-                    // コマンド送信成功
-                })
-                .catch(error => {
-                    // エラー処理
-                });
+            // 前進・後進はmaxSpeedをパラメータで渡す
+            if (command === 'forward' || command === 'backward') {
+                fetch('/' + command + '?speed=' + maxSpeed).catch(() => {});
+            } else {
+                fetch('/' + command).catch(() => {});
+            }
         }
         
         function updateSteering(value) {
             const angle = parseInt(value);
             let direction = '';
-            
             if (angle < 75) direction = '左';
             else if (angle > 105) direction = '右';
             else direction = '中央';
-            
             document.getElementById('steeringValue').textContent = direction + ' (' + angle + '度)';
-            
-            // 即座に送信（反応を良くする）
-            fetch('/steering?angle=' + angle)
-                .then(response => {
-                    // ステアリング設定成功
-                })
-                .catch(error => {
-                    // エラー処理
-                });
+            fetch('/steering?angle=' + angle).catch(() => {});
         }
         
-        // バーチャルスティックの関数
         function handleJoystickStart(e) {
             e.preventDefault();
             isDragging = true;
+            joystickActive = true;
+            // ボタンの繰り返し送信を止める
+            if (buttonInterval) {
+                clearInterval(buttonInterval);
+                buttonInterval = null;
+            }
             joystickKnob.style.transition = 'none';
+            joystickKnob.style.transform = 'none'; // translate(-50%,-50%)のオフセットをリセット
+            // ジョイスティック操作開始時にボタンの走行状態をリセット
+            driveState = null;
+            document.getElementById('btnForward').classList.remove('pressed');
+            document.getElementById('btnBackward').classList.remove('pressed');
         }
         
         function handleJoystickMove(e) {
@@ -406,7 +462,6 @@ void handleRoot() {
             e.preventDefault();
             
             let clientX, clientY;
-            
             if (e.touches && e.touches.length > 0) {
                 clientX = e.touches[0].clientX;
                 clientY = e.touches[0].clientY;
@@ -416,38 +471,42 @@ void handleRoot() {
             }
             
             const rect = joystickContainer.getBoundingClientRect();
+            // コンテナの実際の表示サイズから中心と可動範囲を動的計算
+            const centerX = rect.width  / 2;
+            const centerY = rect.height / 2;
+            const dynamicMaxDist = centerX * 0.67; // 可動範囲 = 半径の約2/3
             const x = clientX - rect.left - centerX;
-            const y = clientY - rect.top - centerY;
+            const y = clientY - rect.top  - centerY;
             
             const distance = Math.sqrt(x * x + y * y);
             const angle = Math.atan2(y, x);
             
             let finalX, finalY;
-            if (distance > maxDistance) {
-                finalX = Math.cos(angle) * maxDistance;
-                finalY = Math.sin(angle) * maxDistance;
+            if (distance > dynamicMaxDist) {
+                finalX = Math.cos(angle) * dynamicMaxDist;
+                finalY = Math.sin(angle) * dynamicMaxDist;
             } else {
                 finalX = x;
                 finalY = y;
             }
             
-            // スティックの位置を更新
-            joystickKnob.style.left = (centerX + finalX - 20) + 'px';
-            joystickKnob.style.top = (centerY + finalY - 20) + 'px';
+            // ノブ位置をコンテナ内CSS座標系で更新
+            const knobHalf = joystickKnob.offsetWidth / 2;
+            joystickKnob.style.left = (centerX + finalX - knobHalf) + 'px';
+            joystickKnob.style.top  = (centerY + finalY - knobHalf) + 'px';
             
-            // 車の制御を更新
-            updateJoystickControl(finalX, finalY);
+            updateJoystickControl(finalX, finalY, dynamicMaxDist);
         }
         
         function handleJoystickEnd(e) {
+            if (!isDragging) return;
             e.preventDefault();
             isDragging = false;
+            joystickActive = false;
             joystickKnob.style.transition = 'all 0.3s ease';
             joystickKnob.style.left = '50%';
             joystickKnob.style.top = '50%';
             joystickKnob.style.transform = 'translate(-50%, -50%)';
-            
-            // 停止
             joystickSpeed.textContent = '0%';
             joystickDirection.textContent = '停止';
             sendCommand('stop');
@@ -455,21 +514,20 @@ void handleRoot() {
         
         function updateMaxSpeed(value) {
             maxSpeed = parseInt(value);
-            maxSpeedValue.textContent = maxSpeed + '%';
+            document.getElementById('maxSpeedValue').textContent = maxSpeed + '%';
+            // 走行中なら即座に速度を更新
+            if (driveState === 'forward' || driveState === 'backward') {
+                sendCommand(driveState);
+            }
         }
         
-        // レスポンス改善用の変数
-        let lastCommand = '';
-        let commandTimeout = null;
-        
-        function updateJoystickControl(x, y) {
+        function updateJoystickControl(x, y, dynMax) {
             const distance = Math.sqrt(x * x + y * y);
-            const speed = Math.min(Math.round((distance / maxDistance) * maxSpeed), maxSpeed);
+            const effectiveMax = dynMax || maxDistance;
+            const speed = Math.min(Math.round((distance / effectiveMax) * maxSpeed), maxSpeed);
             
-            // 速度表示更新
             joystickSpeed.textContent = speed + '%';
             
-            // 方向判定
             let direction = '停止';
             if (speed > 5) {
                 if (y < -10) direction = '前進';
@@ -479,32 +537,18 @@ void handleRoot() {
             }
             joystickDirection.textContent = direction;
             
-            // サーバーにコマンド送信（重複を避ける）
-            const steeringAngle = Math.round(90 + (x / maxDistance) * 30); // 60-120度の範囲
+            const steeringAngle = Math.round(90 + (x / effectiveMax) * 30);
             const newCommand = speed + ',' + steeringAngle + ',' + direction;
             
-            // 前回と同じコマンドの場合は送信しない
             if (newCommand !== lastCommand) {
                 lastCommand = newCommand;
-                
-                // 前回のタイムアウトをクリア
-                if (commandTimeout) {
-                    clearTimeout(commandTimeout);
-                }
-                
-                // 即座に送信
                 sendJoystickCommand(speed, steeringAngle, direction);
             }
         }
         
         function sendJoystickCommand(speed, steering, direction) {
             fetch('/joystick?speed=' + speed + '&steering=' + steering + '&direction=' + direction)
-                .then(response => {
-                    // コマンド送信成功
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                });
+                .catch(() => {});
         }
     </script>
 </body>
@@ -516,14 +560,22 @@ void handleRoot() {
 
 // コマンド処理関数
 void handleForward() {
-  Serial.println("=== 前進 ===");
-  moveForwardWithSpeed(70); // ボタン操作は70%の速度で固定
+  // speedパラメータがあればその値を、なければデフォルト70%を使用
+  int speed = server.hasArg("speed") ? server.arg("speed").toInt() : 70;
+  Serial.print("=== 前進: ");
+  Serial.print(speed);
+  Serial.println("% ===");
+  moveForwardWithSpeed(speed);
   server.send(200, "text/plain", "Forward");
 }
 
 void handleBackward() {
-  Serial.println("=== 後進 ===");
-  moveBackwardWithSpeed(70); // ボタン操作は70%の速度で固定
+  // speedパラメータがあればその値を、なければデフォルト70%を使用
+  int speed = server.hasArg("speed") ? server.arg("speed").toInt() : 70;
+  Serial.print("=== 後進: ");
+  Serial.print(speed);
+  Serial.println("% ===");
+  moveBackwardWithSpeed(speed);
   server.send(200, "text/plain", "Backward");
 }
 
@@ -552,122 +604,72 @@ void handleJoystick() {
     int steering = server.arg("steering").toInt();
     String direction = server.arg("direction");
     
-    // シリアル出力を削減（デバッグ時のみ有効）
-    // Serial.print("J: ");
-    // Serial.print(speed);
-    // Serial.print(",");
-    // Serial.print(steering);
-    // Serial.print(",");
-    // Serial.println(direction);
-    
-    // ステアリング設定
     setServoAngle(steering);
     
-    // モーター制御（PWM速度制御付き）
     if (speed > 5) {
       if (direction == "前進") {
         moveForwardWithSpeed(speed);
       } else if (direction == "後進") {
         moveBackwardWithSpeed(speed);
       } else if (direction == "左旋回") {
-        // 左旋回の場合は前進しながら左にステアリング
         moveForwardWithSpeed(speed);
       } else if (direction == "右旋回") {
-        // 右旋回の場合は前進しながら右にステアリング
         moveForwardWithSpeed(speed);
       }
     } else {
       stopMotors();
     }
     
-    // レスポンスを高速化（最小限の応答）
     server.send(200, "text/plain", "OK");
   } else {
     server.send(400, "text/plain", "Error");
   }
 }
 
-// モーター制御関数（前進・後進・停止のみ）
-void moveForward() {
-  Serial.println("Motor A: 前進 (IN1=HIGH, IN2=LOW)");
-  Serial.println("Motor B: 前進 (IN1=HIGH, IN2=LOW)");
-  
-  // Motor A: 前進
-  digitalWrite(MOTOR_A_IN1, HIGH);
-  digitalWrite(MOTOR_A_IN2, LOW);
-  digitalWrite(MOTOR_A_PWM, HIGH);
-  
-  // Motor B: 前進
-  digitalWrite(MOTOR_B_IN1, HIGH);
-  digitalWrite(MOTOR_B_IN2, LOW);
-  digitalWrite(MOTOR_B_PWM, HIGH);
-}
-
-void moveBackward() {
-  Serial.println("Motor A: 後退 (IN1=LOW, IN2=HIGH)");
-  Serial.println("Motor B: 後退 (IN1=LOW, IN2=HIGH)");
-  
-  // Motor A: 後退
-  digitalWrite(MOTOR_A_IN1, LOW);
-  digitalWrite(MOTOR_A_IN2, HIGH);
-  digitalWrite(MOTOR_A_PWM, HIGH);
-  
-  // Motor B: 後退
-  digitalWrite(MOTOR_B_IN1, LOW);
-  digitalWrite(MOTOR_B_IN2, HIGH);
-  digitalWrite(MOTOR_B_PWM, HIGH);
-}
-
-
+// モーター制御関数
 void moveForwardWithSpeed(int speedPercent) {
-  // 速度をPWM値に変換（0-255）
   int pwmValue = map(speedPercent, 0, 100, 0, 255);
-  
-  // シリアル出力を削減（デバッグ時のみ有効）
-  // Serial.print("F: ");
-  // Serial.println(pwmValue);
-  
-  // Motor A: 前進
   digitalWrite(MOTOR_A_IN1, HIGH);
   digitalWrite(MOTOR_A_IN2, LOW);
   analogWrite(MOTOR_A_PWM, pwmValue);
-  
-  // Motor B: 前進
   digitalWrite(MOTOR_B_IN1, HIGH);
   digitalWrite(MOTOR_B_IN2, LOW);
   analogWrite(MOTOR_B_PWM, pwmValue);
 }
 
 void moveBackwardWithSpeed(int speedPercent) {
-  // 速度をPWM値に変換（0-255）
   int pwmValue = map(speedPercent, 0, 100, 0, 255);
-  
-  // シリアル出力を削減（デバッグ時のみ有効）
-  // Serial.print("B: ");
-  // Serial.println(pwmValue);
-  
-  // Motor A: 後退
   digitalWrite(MOTOR_A_IN1, LOW);
   digitalWrite(MOTOR_A_IN2, HIGH);
   analogWrite(MOTOR_A_PWM, pwmValue);
-  
-  // Motor B: 後退
   digitalWrite(MOTOR_B_IN1, LOW);
   digitalWrite(MOTOR_B_IN2, HIGH);
   analogWrite(MOTOR_B_PWM, pwmValue);
 }
 
+void moveForward() {
+  digitalWrite(MOTOR_A_IN1, HIGH);
+  digitalWrite(MOTOR_A_IN2, LOW);
+  digitalWrite(MOTOR_A_PWM, HIGH);
+  digitalWrite(MOTOR_B_IN1, HIGH);
+  digitalWrite(MOTOR_B_IN2, LOW);
+  digitalWrite(MOTOR_B_PWM, HIGH);
+}
+
+void moveBackward() {
+  digitalWrite(MOTOR_A_IN1, LOW);
+  digitalWrite(MOTOR_A_IN2, HIGH);
+  digitalWrite(MOTOR_A_PWM, HIGH);
+  digitalWrite(MOTOR_B_IN1, LOW);
+  digitalWrite(MOTOR_B_IN2, HIGH);
+  digitalWrite(MOTOR_B_PWM, HIGH);
+}
+
 void stopMotors() {
-  Serial.println("Motor A: 停止 (IN1=LOW, IN2=LOW)");
-  Serial.println("Motor B: 停止 (IN1=LOW, IN2=LOW)");
-  
-  // Motor A: 停止
   digitalWrite(MOTOR_A_IN1, LOW);
   digitalWrite(MOTOR_A_IN2, LOW);
   analogWrite(MOTOR_A_PWM, 0);
-  
-  // Motor B: 停止
   digitalWrite(MOTOR_B_IN1, LOW);
   digitalWrite(MOTOR_B_IN2, LOW);
   analogWrite(MOTOR_B_PWM, 0);
-} 
+}
