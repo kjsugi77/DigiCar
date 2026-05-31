@@ -1,4 +1,11 @@
-# DigiCar（デジカー）
+## 構成フォルダ
+- program/        ← 車両制御プログラム（C++）
+- electronics/    ← 基板データ（KiCad / Gerber / 回路図PDF）
+- 3d_print/       ← 3Dプリント用データ（STL）
+- parts/          ← 部品表（BOM）
+
+
+---# DigiCar（デジカー）
 
 DigiCar は、ミニ四駆サイズの学習用自動運転ミニカーです。  
 プリント基板そのものがシャーシとなる独自構造を採用し、  
@@ -81,17 +88,6 @@ N氏による構想が始まるも、具体化せず停滞。
 
 ### 4. その他
 - 基板（JLCPCB）：約 100 円
-
----
-
-## フォルダ構成
-
-DigiCar/
-├── program/        ← 車両制御プログラム（C++）
-├── electronics/    ← 基板データ（KiCad / Gerber / 回路図PDF）
-├── 3d_print/       ← 3Dプリント用データ（STL）
-└── parts/          ← 部品表（BOM）
-
 
 ---
 
