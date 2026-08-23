@@ -1,11 +1,16 @@
-ここは、DigiCar のプログラムデータを保存するフォルダです。
+# DigiCar プログラム一覧
 
-ESP32 用のプログラムは、以下の2種類があります。
-- Bluetooth 接続用
-- Wi-Fi 接続用
+デジカー（DigiCar）を制御・操作するための各種ソフトウェアを管理しています。
 
-This folder stores all program data for DigiCar.
+## フォルダ構成
 
-There are two types of ESP32 programs:
-- Bluetooth connection
-- Wi-Fi connection
+- **[esp32/](./esp32/)**
+  - デジカー本体のマイコン（ESP32）用ファームウェア
+  - Bluetooth/Wi-Fi直接操縦プログラム、および将来の自律制御・ROSノード（`ros/`）を配置
+- **[android/](./android/)**
+  - デジカー操作・監視用のAndroidアプリケーション
+  - 直接操縦用アプリ、および将来の自律走行監視・ROS連携アプリ（`ros_controller/`）を配置
+
+## 開発の進め方
+1. **直接手動操縦:** `esp32/` 内のプログラムをESP32に書き込み、`android/` のアプリからBluetooth/Wi-Fiで操作します。
+2. **自動化・ROS連携:** 将来的なmicro-ROS等による自律走行機能は各フォルダ内の `ros/` および `ros_controller/` にて拡張していきます。
